@@ -1,10 +1,49 @@
 #include "shell.h"
+#include <ctype.h>
 
 int main() {
     char* cmdline;
     char** arglist;
 
     while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
+        char* line = cmdline;
+
+        if (line[0] == '!') {
+            if (line[1] == '\0') {
+                fprintf(stderr, "history: invalid history reference\n");
+                free(cmdline);
+                continue;
+            }
+
+            char* endptr;
+            long n = strtol(line + 1, &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "history: invalid history reference\n");
+                free(cmdline);
+                continue;
+            }
+
+            char* hist_cmd = get_history_command((int)n);
+            if (hist_cmd == NULL) {
+                fprintf(stderr, "history: %ld: event not found\n", n);
+                free(cmdline);
+                continue;
+            }
+
+            char* expanded = strdup(hist_cmd);
+            if (expanded == NULL) {
+                perror("strdup");
+                free(cmdline);
+                continue;
+            }
+
+            free(cmdline);
+            cmdline = expanded;
+            line = cmdline;
+        }
+
+        add_to_history(line);
+
         if ((arglist = tokenize(cmdline)) != NULL) {
             if (!handle_builtin(arglist)) {
                 execute(arglist);
