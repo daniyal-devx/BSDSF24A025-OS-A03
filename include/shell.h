@@ -24,5 +24,6 @@ void add_to_history(const char* cmd);
 void print_history(void);
 char* get_history_command(int n);
 void setup_readline(void);
+int process_command(char* cmdline);
 
 #endif // SHELL_H
