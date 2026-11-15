@@ -1,9 +1,12 @@
 #include "shell.h"
 #include <ctype.h>
+#include <readline/history.h>
 
 int main() {
     char* cmdline;
     char** arglist;
+
+    setup_readline();
 
     while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
         char* line = cmdline;
@@ -42,6 +45,9 @@ int main() {
             line = cmdline;
         }
 
+        if (line[0] != '\0') {
+            add_history(line);
+        }
         add_to_history(line);
 
         if ((arglist = tokenize(cmdline)) != NULL) {
