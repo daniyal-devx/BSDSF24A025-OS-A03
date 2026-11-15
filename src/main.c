@@ -4,7 +4,6 @@
 
 int main() {
     char* cmdline;
-    char** arglist;
 
     setup_readline();
 
@@ -50,17 +49,7 @@ int main() {
         }
         add_to_history(line);
 
-        if ((arglist = tokenize(cmdline)) != NULL) {
-            if (!handle_builtin(arglist)) {
-                execute(arglist);
-            }
-
-            // Free the memory allocated by tokenize()
-            for (int i = 0; arglist[i] != NULL; i++) {
-                free(arglist[i]);
-            }
-            free(arglist);
-        }
+        process_command(cmdline);
         free(cmdline);
     }
 
