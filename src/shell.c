@@ -1,4 +1,8 @@
 #include "shell.h"
+#include <readline/readline.h>
+#include <readline/history.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 static char* history[HISTORY_SIZE];
 static int history_count = 0;
@@ -40,23 +44,97 @@ char* get_history_command(int n) {
     return history[index];
 }
 
+static char* builtin_commands[] = {
+    "cd",
+    "exit",
+    "help",
+    "history",
+    "jobs",
+    NULL
+};
+
+static char* command_generator(const char* text, int state) {
+    static int builtin_index;
+    static char* path_copy;
+    static char* path_token;
+    static DIR* dir;
+    static size_t len;
+
+    if (state == 0) {
+        builtin_index = 0;
+        if (path_copy) {
+            free(path_copy);
+            path_copy = NULL;
+        }
+        if (dir) {
+            closedir(dir);
+            dir = NULL;
+        }
+        path_token = NULL;
+        len = strlen(text);
+
+        char* path_env = getenv("PATH");
+        if (path_env != NULL) {
+            path_copy = strdup(path_env);
+            path_token = path_copy ? strtok(path_copy, ":") : NULL;
+        }
+    }
+
+    while (builtin_commands[builtin_index] != NULL) {
+        char* name = builtin_commands[builtin_index++];
+        if (strncmp(name, text, len) == 0) {
+            return strdup(name);
+        }
+    }
+
+    while (path_token != NULL) {
+        if (dir == NULL) {
+            dir = opendir(path_token);
+            if (dir == NULL) {
+                path_token = strtok(NULL, ":");
+                continue;
+            }
+        }
+
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (strncmp(entry->d_name, text, len) != 0) {
+                continue;
+            }
+
+            char fullpath[4096];
+            snprintf(fullpath, sizeof(fullpath), "%s/%s", path_token, entry->d_name);
+            struct stat st;
+            if (stat(fullpath, &st) == 0 && S_ISREG(st.st_mode) && access(fullpath, X_OK) == 0) {
+                return strdup(entry->d_name);
+            }
+        }
+
+        closedir(dir);
+        dir = NULL;
+        path_token = strtok(NULL, ":");
+    }
+
+    return NULL;
+}
+
+static char** shell_completion(const char* text, int start, int end) {
+    (void)end;
+    rl_attempted_completion_over = 0;
+    if (start == 0) {
+        return rl_completion_matches(text, command_generator);
+    }
+    return rl_completion_matches(text, rl_filename_completion_function);
+}
+
+void setup_readline(void) {
+    rl_attempted_completion_function = shell_completion;
+}
+
 char* read_cmd(char* prompt, FILE* fp) {
-    printf("%s", prompt);
-    char* cmdline = (char*) malloc(sizeof(char) * MAX_LEN);
-    int c, pos = 0;
-
-    while ((c = getc(fp)) != EOF) {
-        if (c == '\n') break;
-        cmdline[pos++] = c;
-    }
-
-    if (c == EOF && pos == 0) {
-        free(cmdline);
-        return NULL; // Handle Ctrl+D
-    }
-    
-    cmdline[pos] = '\0';
-    return cmdline;
+    (void)fp;
+    char* line = readline(prompt);
+    return line;
 }
 
 char** tokenize(char* cmdline) {
