@@ -31,6 +31,7 @@ void print_history(void);
 char* get_history_command(int n);
 void setup_readline(void);
 int process_command(char* cmdline);
+int execute_command_get_status(char* cmdline);
 void add_job(pid_t pid, const char* cmd);
 void remove_job_by_pid(pid_t pid);
 void reap_jobs(void);

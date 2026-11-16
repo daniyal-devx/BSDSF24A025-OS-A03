@@ -242,7 +242,8 @@ int execute(char* arglist[]) {
             exit(127);
         default:
             waitpid(cpid, &status, 0);
-            return 0;
+            if (WIFEXITED(status)) return WEXITSTATUS(status);
+            return 1;
     }
 }
 
@@ -263,11 +264,13 @@ static int execute_simple_cmd(command_t* cmd, int background, const char* jobcmd
     if (background) {
         add_job(pid, jobcmd);
         printf("[%d] %d\n", 1, pid);
+        return 0;
     } else {
         int status;
         waitpid(pid, &status, 0);
+        if (WIFEXITED(status)) return WEXITSTATUS(status);
+        return 1;
     }
-    return 0;
 }
 
 static int execute_pipe_cmd(command_t* left, command_t* right, int background, const char* jobcmd) {
@@ -332,19 +335,22 @@ static int execute_pipe_cmd(command_t* left, command_t* right, int background, c
         add_job(left_pid, jobcmd);
         add_job(right_pid, jobcmd);
         printf("[%d] %d %d\n", 1, left_pid, right_pid);
+        return 0;
     } else {
-        waitpid(left_pid, NULL, 0);
-        waitpid(right_pid, NULL, 0);
+        int status_left = 0, status_right = 0;
+        waitpid(left_pid, &status_left, 0);
+        waitpid(right_pid, &status_right, 0);
+        if (WIFEXITED(status_right)) return WEXITSTATUS(status_right);
+        return 1;
     }
-    return 0;
 }
 
-static int execute_segment(char* segment) {
+static int execute_segment(char* segment, int* last_status) {
     char jobcmd[MAX_LEN];
     int background = parse_background(segment, jobcmd, sizeof(jobcmd));
 
     if (is_blank(segment)) {
-        return 0; // empty command (e.g. extra spaces or trailing ;)
+        return 0; // empty command
     }
 
     // Fast path: no special chars -> preserve existing simple behavior
@@ -363,12 +369,14 @@ static int execute_segment(char* segment) {
                     } else {
                         add_job(pid, jobcmd);
                         printf("[%d] %d\n", 1, pid);
+                        if (last_status) *last_status = 0;
                     }
                 } else {
-                    execute(arglist);
+                    int st = execute(arglist);
+                    if (last_status) *last_status = st;
                 }
             } else {
-                // builtins run in foreground; & ignored if somehow present (but we stripped it)
+                if (last_status) *last_status = 0; // builtin handled
             }
             for (int i = 0; arglist[i] != NULL; i++) {
                 free(arglist[i]);
@@ -411,7 +419,8 @@ static int execute_segment(char* segment) {
             free_tokens(tokens, ntokens);
             return -1;
         }
-        execute_pipe_cmd(&left, &right, background, jobcmd);
+        int st = execute_pipe_cmd(&left, &right, background, jobcmd);
+        if (last_status) *last_status = st;
         free_command(&left);
         free_command(&right);
         free_tokens(tokens, ntokens);
@@ -423,7 +432,8 @@ static int execute_segment(char* segment) {
             free_tokens(tokens, ntokens);
             return -1;
         }
-        execute_simple_cmd(&cmd, background, jobcmd);
+        int st = execute_simple_cmd(&cmd, background, jobcmd);
+        if (last_status) *last_status = st;
         free_command(&cmd);
         free_tokens(tokens, ntokens);
         return 0;
@@ -442,7 +452,7 @@ int process_command(char* cmdline) {
     while (segment != NULL) {
         char* segcopy = strdup(segment);
         if (segcopy != NULL) {
-            execute_segment(segcopy);
+            execute_segment(segcopy, NULL);
             free(segcopy);
         }
         segment = strtok_r(NULL, ";", &saveptr);
@@ -450,4 +460,26 @@ int process_command(char* cmdline) {
 
     free(linecopy);
     return 0;
+}
+
+int execute_command_get_status(char* cmdline) {
+    if (cmdline == NULL) return 1;
+
+    char* linecopy = strdup(cmdline);
+    if (linecopy == NULL) return 1;
+
+    int last_status = 0;
+    char* saveptr = NULL;
+    char* segment = strtok_r(linecopy, ";", &saveptr);
+    while (segment != NULL) {
+        char* segcopy = strdup(segment);
+        if (segcopy != NULL) {
+            execute_segment(segcopy, &last_status);
+            free(segcopy);
+        }
+        segment = strtok_r(NULL, ";", &saveptr);
+    }
+
+    free(linecopy);
+    return last_status;
 }
