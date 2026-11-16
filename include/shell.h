@@ -14,6 +14,12 @@
 #define ARGLEN 30
 #define PROMPT "FCIT> "
 #define HISTORY_SIZE 20
+#define MAX_JOBS 64
+
+typedef struct {
+    pid_t pid;
+    char* cmd;
+} job_t;
 
 // Function prototypes
 char* read_cmd(char* prompt, FILE* fp);
@@ -25,5 +31,9 @@ void print_history(void);
 char* get_history_command(int n);
 void setup_readline(void);
 int process_command(char* cmdline);
+void add_job(pid_t pid, const char* cmd);
+void remove_job_by_pid(pid_t pid);
+void reap_jobs(void);
+void print_jobs(void);
 
 #endif // SHELL_H
