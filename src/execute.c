@@ -1,6 +1,7 @@
 #include "shell.h"
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <ctype.h>
 
 #define MAX_TOKENS 128
 
@@ -22,8 +23,6 @@ static int has_special_chars(const char* cmdline) {
     }
     return 0;
 }
-
-/* helpers removed */
 
 static char** tokenize_special(const char* cmdline, int* count) {
     char** tokens = malloc((MAX_TOKENS + 1) * sizeof(char*));
@@ -116,7 +115,7 @@ static int build_command(char** tokens, int start, int end, command_t* cmd) {
                 }
                 cmd->outfile = tokens[i + 1];
             }
-            i++; // skip filename
+            i++;
         } else if (strcmp(tokens[i], "|") == 0) {
             fprintf(stderr, "syntax error: unexpected pipe\n");
             return -1;
@@ -180,9 +179,53 @@ static int setup_redirections(command_t* cmd) {
 
 static void free_command(command_t* cmd) {
     if (cmd->argv != NULL) {
-        free(cmd->argv); // elements owned by tokens array
+        free(cmd->argv);
         cmd->argv = NULL;
     }
+}
+
+static void trim_inplace(char* str) {
+    if (str == NULL) return;
+    char* start = str;
+    while (*start && isspace((unsigned char)*start)) start++;
+    char* end = start + strlen(start);
+    while (end > start && isspace((unsigned char)*(end - 1))) end--;
+    *end = '\0';
+    if (start != str) memmove(str, start, strlen(start) + 1);
+}
+
+static int is_blank(const char* str) {
+    if (str == NULL) return 1;
+    while (*str) {
+        if (!isspace((unsigned char)*str)) return 0;
+        str++;
+    }
+    return 1;
+}
+
+static int parse_background(char* segment, char* jobcmd_out, size_t outsz) {
+    // trim leading/trailing
+    trim_inplace(segment);
+    if (segment[0] == '\0') return 0;
+
+    // save original trimmed command for job display
+    strncpy(jobcmd_out, segment, outsz - 1);
+    jobcmd_out[outsz - 1] = '\0';
+
+    int background = 0;
+    size_t len = strlen(segment);
+    if (len > 0 && segment[len - 1] == '&') {
+        background = 1;
+        segment[len - 1] = '\0';
+        trim_inplace(segment);
+        // also trim trailing & in job display? keep command text without &
+        size_t jlen = strlen(jobcmd_out);
+        if (jlen > 0 && jobcmd_out[jlen - 1] == '&') {
+            jobcmd_out[jlen - 1] = '\0';
+            trim_inplace(jobcmd_out);
+        }
+    }
+    return background;
 }
 
 int execute(char* arglist[]) {
@@ -203,7 +246,7 @@ int execute(char* arglist[]) {
     }
 }
 
-static int execute_simple(command_t* cmd) {
+static int execute_simple_cmd(command_t* cmd, int background, const char* jobcmd) {
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork failed");
@@ -217,12 +260,17 @@ static int execute_simple(command_t* cmd) {
         perror(cmd->argv[0]);
         exit(127);
     }
-    int status;
-    waitpid(pid, &status, 0);
+    if (background) {
+        add_job(pid, jobcmd);
+        printf("[%d] %d\n", 1, pid);
+    } else {
+        int status;
+        waitpid(pid, &status, 0);
+    }
     return 0;
 }
 
-static int execute_pipe(command_t* left, command_t* right) {
+static int execute_pipe_cmd(command_t* left, command_t* right, int background, const char* jobcmd) {
     int pipefd[2];
     if (pipe(pipefd) < 0) {
         perror("pipe");
@@ -256,7 +304,11 @@ static int execute_pipe(command_t* left, command_t* right) {
         perror("fork failed");
         close(pipefd[0]);
         close(pipefd[1]);
-        waitpid(left_pid, NULL, 0);
+        if (background) {
+            add_job(left_pid, jobcmd);
+        } else {
+            waitpid(left_pid, NULL, 0);
+        }
         return -1;
     }
     if (right_pid == 0) {
@@ -276,20 +328,47 @@ static int execute_pipe(command_t* left, command_t* right) {
 
     close(pipefd[0]);
     close(pipefd[1]);
-    waitpid(left_pid, NULL, 0);
-    waitpid(right_pid, NULL, 0);
+    if (background) {
+        add_job(left_pid, jobcmd);
+        add_job(right_pid, jobcmd);
+        printf("[%d] %d %d\n", 1, left_pid, right_pid);
+    } else {
+        waitpid(left_pid, NULL, 0);
+        waitpid(right_pid, NULL, 0);
+    }
     return 0;
 }
 
-int process_command(char* cmdline) {
-    if (cmdline == NULL) return 0;
+static int execute_segment(char* segment) {
+    char jobcmd[MAX_LEN];
+    int background = parse_background(segment, jobcmd, sizeof(jobcmd));
+
+    if (is_blank(segment)) {
+        return 0; // empty command (e.g. extra spaces or trailing ;)
+    }
 
     // Fast path: no special chars -> preserve existing simple behavior
-    if (!has_special_chars(cmdline)) {
-        char** arglist = tokenize(cmdline);
+    if (!has_special_chars(segment)) {
+        char** arglist = tokenize(segment);
         if (arglist != NULL) {
             if (!handle_builtin(arglist)) {
-                execute(arglist);
+                if (background) {
+                    pid_t pid = fork();
+                    if (pid < 0) {
+                        perror("fork failed");
+                    } else if (pid == 0) {
+                        execvp(arglist[0], arglist);
+                        perror(arglist[0]);
+                        exit(127);
+                    } else {
+                        add_job(pid, jobcmd);
+                        printf("[%d] %d\n", 1, pid);
+                    }
+                } else {
+                    execute(arglist);
+                }
+            } else {
+                // builtins run in foreground; & ignored if somehow present (but we stripped it)
             }
             for (int i = 0; arglist[i] != NULL; i++) {
                 free(arglist[i]);
@@ -300,13 +379,12 @@ int process_command(char* cmdline) {
     }
 
     int ntokens = 0;
-    char** tokens = tokenize_special(cmdline, &ntokens);
+    char** tokens = tokenize_special(segment, &ntokens);
     if (tokens == NULL || ntokens == 0) {
         if (tokens) free_tokens(tokens, ntokens);
         return 0;
     }
 
-    // find pipe
     int pipe_index = -1;
     for (int i = 0; i < ntokens; i++) {
         if (strcmp(tokens[i], "|") == 0) {
@@ -328,13 +406,12 @@ int process_command(char* cmdline) {
         command_t left, right;
         if (build_command(tokens, 0, pipe_index, &left) < 0 ||
             build_command(tokens, pipe_index + 1, ntokens, &right) < 0) {
-            // build_command may have partially set argv on failure? it returns -1 before alloc in some cases
             if (left.argv) free(left.argv);
             if (right.argv) free(right.argv);
             free_tokens(tokens, ntokens);
             return -1;
         }
-        execute_pipe(&left, &right);
+        execute_pipe_cmd(&left, &right, background, jobcmd);
         free_command(&left);
         free_command(&right);
         free_tokens(tokens, ntokens);
@@ -346,10 +423,31 @@ int process_command(char* cmdline) {
             free_tokens(tokens, ntokens);
             return -1;
         }
-        // For simple external commands with redirection, do not treat as builtin
-        execute_simple(&cmd);
+        execute_simple_cmd(&cmd, background, jobcmd);
         free_command(&cmd);
         free_tokens(tokens, ntokens);
         return 0;
     }
+}
+
+int process_command(char* cmdline) {
+    if (cmdline == NULL) return 0;
+
+    // handle semicolon chaining
+    char* linecopy = strdup(cmdline);
+    if (linecopy == NULL) return -1;
+
+    char* saveptr = NULL;
+    char* segment = strtok_r(linecopy, ";", &saveptr);
+    while (segment != NULL) {
+        char* segcopy = strdup(segment);
+        if (segcopy != NULL) {
+            execute_segment(segcopy);
+            free(segcopy);
+        }
+        segment = strtok_r(NULL, ";", &saveptr);
+    }
+
+    free(linecopy);
+    return 0;
 }

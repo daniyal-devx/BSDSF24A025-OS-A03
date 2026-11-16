@@ -7,7 +7,12 @@ int main() {
 
     setup_readline();
 
-    while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
+    while (1) {
+        reap_jobs();
+        cmdline = read_cmd(PROMPT, stdin);
+        if (cmdline == NULL) {
+            break;
+        }
         char* line = cmdline;
 
         if (line[0] == '!') {

@@ -3,10 +3,58 @@
 #include <readline/history.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 static char* history[HISTORY_SIZE];
 static int history_count = 0;
 static int history_start = 0;
+
+static job_t jobs[MAX_JOBS];
+static int job_count = 0;
+
+void add_job(pid_t pid, const char* cmd) {
+    if (job_count >= MAX_JOBS || cmd == NULL) {
+        return;
+    }
+    jobs[job_count].pid = pid;
+    jobs[job_count].cmd = strdup(cmd);
+    if (jobs[job_count].cmd == NULL) {
+        return;
+    }
+    job_count++;
+}
+
+void remove_job_by_pid(pid_t pid) {
+    for (int i = 0; i < job_count; i++) {
+        if (jobs[i].pid == pid) {
+            free(jobs[i].cmd);
+            for (int j = i; j < job_count - 1; j++) {
+                jobs[j] = jobs[j + 1];
+            }
+            job_count--;
+            return;
+        }
+    }
+}
+
+void reap_jobs(void) {
+    int status;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        remove_job_by_pid(pid);
+    }
+}
+
+void print_jobs(void) {
+    if (job_count == 0) {
+        printf("No active background jobs.\n");
+        return;
+    }
+    printf("PID\tCOMMAND\n");
+    for (int i = 0; i < job_count; i++) {
+        printf("%d\t%s\n", jobs[i].pid, jobs[i].cmd);
+    }
+}
 
 void add_to_history(const char* cmd) {
     if (cmd == NULL || cmd[0] == '\0') {
@@ -150,21 +198,26 @@ char** tokenize(char* cmdline) {
     }
 
     char* cp = cmdline;
-    char* start;
-    int len;
     int argnum = 0;
 
     while (*cp != '\0' && argnum < MAXARGS) {
         while (*cp == ' ' || *cp == '\t') cp++; // Skip leading whitespace
-        
         if (*cp == '\0') break; // Line was only whitespace
 
-        start = cp;
-        len = 1;
-        while (*++cp != '\0' && !(*cp == ' ' || *cp == '\t')) {
-            len++;
+        int len = 0;
+        while (*cp != '\0' && *cp != ' ' && *cp != '\t') {
+            if (*cp == '"' || *cp == '\'') {
+                char quote = *cp++;
+                while (*cp != '\0' && *cp != quote) {
+                    if (len < ARGLEN - 1) arglist[argnum][len++] = *cp;
+                    cp++;
+                }
+                if (*cp == quote) cp++;
+            } else {
+                if (len < ARGLEN - 1) arglist[argnum][len++] = *cp;
+                cp++;
+            }
         }
-        strncpy(arglist[argnum], start, len);
         arglist[argnum][len] = '\0';
         argnum++;
     }
@@ -208,7 +261,7 @@ int handle_builtin(char** arglist) {
     }
 
     if (strcmp(arglist[0], "jobs") == 0) {
-        printf("Job control not yet implemented.\n");
+        print_jobs();
         return 1;
     }
 
