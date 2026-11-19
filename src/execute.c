@@ -140,7 +140,14 @@ static int build_command(char** tokens, int start, int end, command_t* cmd) {
             i++;
             continue;
         } else {
-            cmd->argv[j++] = tokens[i];
+            cmd->argv[j] = strdup(tokens[i]);
+            if (cmd->argv[j] == NULL) {
+                for (int k = 0; k < j; k++) free(cmd->argv[k]);
+                free(cmd->argv);
+                cmd->argv = NULL;
+                return -1;
+            }
+            j++;
         }
     }
     cmd->argv[j] = NULL;
@@ -179,6 +186,9 @@ static int setup_redirections(command_t* cmd) {
 
 static void free_command(command_t* cmd) {
     if (cmd->argv != NULL) {
+        for (int i = 0; cmd->argv[i] != NULL; i++) {
+            free(cmd->argv[i]);
+        }
         free(cmd->argv);
         cmd->argv = NULL;
     }
@@ -357,26 +367,32 @@ static int execute_segment(char* segment, int* last_status) {
     if (!has_special_chars(segment)) {
         char** arglist = tokenize(segment);
         if (arglist != NULL) {
-            if (!handle_builtin(arglist)) {
-                if (background) {
-                    pid_t pid = fork();
-                    if (pid < 0) {
-                        perror("fork failed");
-                    } else if (pid == 0) {
-                        execvp(arglist[0], arglist);
-                        perror(arglist[0]);
-                        exit(127);
+            if (arglist[0] != NULL && arglist[1] == NULL && is_assignment(arglist[0])) {
+                handle_assignment(arglist[0]);
+                if (last_status) *last_status = 0;
+            } else {
+                expand_variables(arglist);
+                if (!handle_builtin(arglist)) {
+                    if (background) {
+                        pid_t pid = fork();
+                        if (pid < 0) {
+                            perror("fork failed");
+                        } else if (pid == 0) {
+                            execvp(arglist[0], arglist);
+                            perror(arglist[0]);
+                            exit(127);
+                        } else {
+                            add_job(pid, jobcmd);
+                            printf("[%d] %d\n", 1, pid);
+                            if (last_status) *last_status = 0;
+                        }
                     } else {
-                        add_job(pid, jobcmd);
-                        printf("[%d] %d\n", 1, pid);
-                        if (last_status) *last_status = 0;
+                        int st = execute(arglist);
+                        if (last_status) *last_status = st;
                     }
                 } else {
-                    int st = execute(arglist);
-                    if (last_status) *last_status = st;
+                    if (last_status) *last_status = 0; // builtin handled
                 }
-            } else {
-                if (last_status) *last_status = 0; // builtin handled
             }
             for (int i = 0; arglist[i] != NULL; i++) {
                 free(arglist[i]);
@@ -414,11 +430,13 @@ static int execute_segment(char* segment, int* last_status) {
         command_t left, right;
         if (build_command(tokens, 0, pipe_index, &left) < 0 ||
             build_command(tokens, pipe_index + 1, ntokens, &right) < 0) {
-            if (left.argv) free(left.argv);
-            if (right.argv) free(right.argv);
+            if (left.argv) free_command(&left);
+            if (right.argv) free_command(&right);
             free_tokens(tokens, ntokens);
             return -1;
         }
+        expand_variables(left.argv);
+        expand_variables(right.argv);
         int st = execute_pipe_cmd(&left, &right, background, jobcmd);
         if (last_status) *last_status = st;
         free_command(&left);
@@ -428,10 +446,11 @@ static int execute_segment(char* segment, int* last_status) {
     } else {
         command_t cmd;
         if (build_command(tokens, 0, ntokens, &cmd) < 0) {
-            if (cmd.argv) free(cmd.argv);
+            if (cmd.argv) free_command(&cmd);
             free_tokens(tokens, ntokens);
             return -1;
         }
+        expand_variables(cmd.argv);
         int st = execute_simple_cmd(&cmd, background, jobcmd);
         if (last_status) *last_status = st;
         free_command(&cmd);
