@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <ctype.h>
 
 static char* history[HISTORY_SIZE];
 static int history_count = 0;
@@ -11,6 +12,135 @@ static int history_start = 0;
 
 static job_t jobs[MAX_JOBS];
 static int job_count = 0;
+
+typedef struct var_node {
+    char* name;
+    char* value;
+    struct var_node* next;
+} var_node;
+
+static var_node* var_list = NULL;
+
+static int is_valid_var_name(const char* name) {
+    if (name == NULL || name[0] == '\0') return 0;
+    if (!(isalpha((unsigned char)name[0]) || name[0] == '_')) return 0;
+    for (int i = 1; name[i] != '\0'; i++) {
+        if (!(isalnum((unsigned char)name[i]) || name[i] == '_')) return 0;
+    }
+    return 1;
+}
+
+int is_assignment(const char* arg) {
+    if (arg == NULL) return 0;
+    const char* eq = strchr(arg, '=');
+    if (eq == NULL || eq == arg) return 0;
+    char name[256];
+    size_t nlen = (size_t)(eq - arg);
+    if (nlen >= sizeof(name)) return 0;
+    memcpy(name, arg, nlen);
+    name[nlen] = '\0';
+    return is_valid_var_name(name);
+}
+
+int handle_assignment(const char* arg) {
+    if (!is_assignment(arg)) return 0;
+    const char* eq = strchr(arg, '=');
+    size_t nlen = (size_t)(eq - arg);
+    char* name = malloc(nlen + 1);
+    if (!name) return 1;
+    memcpy(name, arg, nlen);
+    name[nlen] = '\0';
+
+    const char* val_src = eq + 1;
+    char* value = strdup(val_src ? val_src : "");
+    if (!value) {
+        free(name);
+        return 1;
+    }
+
+    // strip surrounding quotes if present
+    size_t vlen = strlen(value);
+    if (vlen >= 2 && ((value[0] == '"' && value[vlen - 1] == '"') || (value[0] == '\'' && value[vlen - 1] == '\''))) {
+        char* unquoted = malloc(vlen - 1);
+        if (unquoted) {
+            memcpy(unquoted, value + 1, vlen - 2);
+            unquoted[vlen - 2] = '\0';
+            free(value);
+            value = unquoted;
+        }
+    }
+
+    // update existing
+    for (var_node* cur = var_list; cur != NULL; cur = cur->next) {
+        if (strcmp(cur->name, name) == 0) {
+            char* newv = strdup(value);
+            if (newv) {
+                free(cur->value);
+                cur->value = newv;
+            }
+            free(name);
+            free(value);
+            return 1;
+        }
+    }
+
+    // add new
+    var_node* node = malloc(sizeof(var_node));
+    if (!node) {
+        free(name);
+        free(value);
+        return 1;
+    }
+    node->name = name;
+    node->value = value;
+    node->next = var_list;
+    var_list = node;
+    return 1;
+}
+
+static const char* get_variable_value(const char* name) {
+    for (var_node* cur = var_list; cur != NULL; cur = cur->next) {
+        if (strcmp(cur->name, name) == 0) {
+            return cur->value;
+        }
+    }
+    return NULL;
+}
+
+void expand_variables(char** arglist) {
+    if (arglist == NULL) return;
+    for (int i = 0; arglist[i] != NULL; i++) {
+        if (arglist[i][0] == '$' && arglist[i][1] != '\0') {
+            const char* name = arglist[i] + 1;
+            const char* val = get_variable_value(name);
+            char* newval = strdup(val ? val : "");
+            if (newval) {
+                free(arglist[i]);
+                arglist[i] = newval;
+            }
+        }
+    }
+}
+
+void print_variables(void) {
+    if (var_list == NULL) {
+        printf("No variables defined.\n");
+        return;
+    }
+    // print in reverse? list prepends; acceptable either way
+    // to print in insertion-like order, collect or reverse - simple reverse traversal by recursion/count not necessary
+    // better to print in defined order by reversing into temp array
+    int count = 0;
+    for (var_node* cur = var_list; cur != NULL; cur = cur->next) count++;
+    var_node** arr = malloc(count * sizeof(var_node*));
+    if (!arr) return;
+    int idx = 0;
+    for (var_node* cur = var_list; cur != NULL; cur = cur->next) arr[idx++] = cur;
+    for (int i = count - 1; i >= 0; i--) {
+        printf("%s=%s\n", arr[i]->name, arr[i]->value);
+    }
+    free(arr);
+}
 
 void add_job(pid_t pid, const char* cmd) {
     if (job_count >= MAX_JOBS || cmd == NULL) {
@@ -98,6 +228,7 @@ static char* builtin_commands[] = {
     "help",
     "history",
     "jobs",
+    "set",
     NULL
 };
 
@@ -257,6 +388,7 @@ int handle_builtin(char** arglist) {
         printf("  help                Display this help message\n");
         printf("  jobs                Display background job status\n");
         printf("  history             Display command history\n");
+        printf("  set                 Display shell variables\n");
         return 1;
     }
 
@@ -267,6 +399,11 @@ int handle_builtin(char** arglist) {
 
     if (strcmp(arglist[0], "history") == 0) {
         print_history();
+        return 1;
+    }
+
+    if (strcmp(arglist[0], "set") == 0) {
+        print_variables();
         return 1;
     }
 

@@ -36,5 +36,9 @@ void add_job(pid_t pid, const char* cmd);
 void remove_job_by_pid(pid_t pid);
 void reap_jobs(void);
 void print_jobs(void);
+int is_assignment(const char* arg);
+int handle_assignment(const char* arg);
+void expand_variables(char** arglist);
+void print_variables(void);
 
 #endif // SHELL_H
